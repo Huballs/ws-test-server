@@ -102,7 +102,7 @@ class session : public std::enable_shared_from_this<session>
         // Echo the message
         ws_.text(ws_.got_text());
 
-        ws_clients.back().last_message = beast::buffers_to_string(buffer_.data());
+        //ws_clients.back().last_message = beast::buffers_to_string(buffer_.data());
         ws_clients.back().last_message_time = std::chrono::system_clock::now();
         
         // Do another read
