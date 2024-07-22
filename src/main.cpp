@@ -104,8 +104,10 @@ class session : public std::enable_shared_from_this<session>
 
         ws_clients.back().last_message = beast::buffers_to_string(buffer_.data());
         ws_clients.back().last_message_time = std::chrono::system_clock::now();
-
-        ws_.async_write(buffer_.data(), beast::bind_front_handler(&session::on_write, shared_from_this()));
+        
+        // Do another read
+        do_read();
+        //ws_.async_write(buffer_.data(), beast::bind_front_handler(&session::on_write, shared_from_this()));
     }
 
     void on_write(beast::error_code ec, std::size_t bytes_transferred) {
