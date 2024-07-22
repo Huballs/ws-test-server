@@ -1,0 +1,9 @@
+{
+    "version": 4,
+    "vendor": {
+        "conan": {}
+    },
+    "include": [
+        "C:\\Users\\edashkevich\\Documents\\source\\ws-test-server\\build\\CMakePresets.json"
+    ]
+}

@@ -1,0 +1,9 @@
+[requires]
+boost/1.82.0
+
+[options]
+boost/*:pch=False
+
+[generators]
+CMakeDeps
+CMakeToolchain
