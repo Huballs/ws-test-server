@@ -28,6 +28,8 @@ endif()
 
 set(SRC_FILES
   src/main.cpp
+  src/ws_client.h
+  src/ws_client.cpp
   )
 
 add_executable(${PROJECT_NAME} ${SRC_FILES})
