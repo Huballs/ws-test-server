@@ -66,7 +66,7 @@ class session : public std::enable_shared_from_this<session>
                     std::string(BOOST_BEAST_VERSION_STRING) + " websocket-server-async");
         }));
 
-        auto time_point = std::chrono::steady_clock::now();
+        auto time_point = std::chrono::system_clock::now();
 
         ws_client_t ws_client;
         ws_client.connect_time = time_point;
@@ -103,7 +103,7 @@ class session : public std::enable_shared_from_this<session>
         ws_.text(ws_.got_text());
 
         ws_clients.back().last_message = beast::buffers_to_string(buffer_.data());
-        ws_clients.back().last_message_time = std::chrono::steady_clock::now();
+        ws_clients.back().last_message_time = std::chrono::system_clock::now();
 
         ws_.async_write(buffer_.data(), beast::bind_front_handler(&session::on_write, shared_from_this()));
     }

@@ -33,6 +33,8 @@
                         const clientDiv = document.createElement('div');
                         clientDiv.classList.add('client');
 
+                        console.log(clientInfo);
+
                         const headerDiv = document.createElement('div');
                         headerDiv.classList.add('client-header');
                         headerDiv.textContent = `Client ID: ${clientId}`;
@@ -43,11 +45,11 @@
                         clientDiv.appendChild(lastMessageDiv);
 
                         const connectTimeDiv = document.createElement('div');
-                        connectTimeDiv.textContent = `Connect Time: ${clientInfo.connect_time}`;
+                        connectTimeDiv.textContent = `Connect Time: ${formatTimestamp(clientInfo.connect_time)}`;
                         clientDiv.appendChild(connectTimeDiv);
 
                         const lastMessageTimeDiv = document.createElement('div');
-                        lastMessageTimeDiv.textContent = `Last Message Time: ${clientInfo.last_message_time}`;
+                        lastMessageTimeDiv.textContent = `Last Message Time: ${formatTimestamp(clientInfo.last_message_time)}`;
                         clientDiv.appendChild(lastMessageTimeDiv);
 
                         clientsDiv.appendChild(clientDiv);
@@ -55,6 +57,11 @@
                 })
                 .catch(error => console.error('Error fetching client data:', error));
         });
+
+        function formatTimestamp(seconds) {
+            const date = new Date(seconds * 1000);
+            return date.toLocaleString();
+        }
     </script>
 
 </body>

@@ -44,10 +44,10 @@ boost::json::object getWsClients(){
     for(auto& client : ws_clients){
         boost::json::object client_obj;
 
-        client_obj["connect_time"] = client.connect_time.time_since_epoch().count();
+        client_obj["connect_time"] = std::chrono::system_clock::to_time_t(client.connect_time);
         client_obj["last_message"] = client.last_message;
-        client_obj["last_message_time"] = client.last_message_time.time_since_epoch().count();
-        obj[boost::json::value_to<std::string>(boost::json::value(count))] = client_obj;
+        client_obj["last_message_time"] = std::chrono::system_clock::to_time_t(client.last_message_time);
+        obj[std::to_string(count++)] = client_obj;
     }
 
     return obj;
@@ -178,7 +178,7 @@ handle_request(beast::string_view doc_root, http::request<Body, http::basic_fiel
     if(req.target().empty() || req.target()[0] != '/' || req.target().find("..") != beast::string_view::npos)
         return bad_request("Illegal request-target");
 
-    if(req.target() == "get_clients"){
+    if(req.target() == "/get_clients"){
         http::response<http::string_body> res{ http::status::ok, req.version() };
         res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
         res.set(http::field::content_type, "text/html");

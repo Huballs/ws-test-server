@@ -2,10 +2,11 @@
 
 #include <vector>
 #include <chrono>
+#include <string>
 
 struct ws_client_t{
-    std::chrono::steady_clock::time_point last_message_time;
-    std::chrono::steady_clock::time_point connect_time;
+    std::chrono::system_clock::time_point last_message_time;
+    std::chrono::system_clock::time_point connect_time;
     std::string last_message;
 };
 
