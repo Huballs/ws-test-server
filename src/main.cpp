@@ -9,218 +9,249 @@
 
 //------------------------------------------------------------------------------
 //
-// Example: WebSocket server, asynchronous
+// Example: WebSocket client, synchronous
 //
 //------------------------------------------------------------------------------
 
-#include <algorithm>
-#include <boost/asio/dispatch.hpp>
-#include <boost/asio/strand.hpp>
+//[example_websocket_client
+
+#include <boost/asio/connect.hpp>
+#include <boost/asio/ip/tcp.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/websocket.hpp>
+#include <boost/lexical_cast.hpp>
 #include <cstdlib>
-#include <functional>
 #include <iostream>
-#include <memory>
 #include <string>
-#include <thread>
+#include <format>
 #include <vector>
-#include "server.h"
-#include "ws_client.h"
+#include <ctime>
+#include <functional>
+#include <thread>
+#include<windows.h>
 
 namespace beast     = boost::beast;         // from <boost/beast.hpp>
 namespace http      = beast::http;          // from <boost/beast/http.hpp>
 namespace websocket = beast::websocket;     // from <boost/beast/websocket.hpp>
 namespace net       = boost::asio;          // from <boost/asio.hpp>
 using tcp           = boost::asio::ip::tcp; // from <boost/asio/ip/tcp.hpp>
+using resolver_result_t = boost::asio::ip::basic_resolver_results<boost::asio::ip::tcp>;
 
-//------------------------------------------------------------------------------
 
-// Echoes back all received WebSocket messages
-class session : public std::enable_shared_from_this<session>
-{
-    websocket::stream<beast::tcp_stream> ws_;
-    beast::flat_buffer buffer_;
+const char* ws_path = "/socket-units-server/"; 
+constexpr long long time_between_packets = 5;
 
-    public:
-    // Take ownership of the socket
-    explicit session(tcp::socket&& socket) : ws_(std::move(socket)) {}
+std::vector<uint8_t> ws_payload = {
+    250, 2, 32, 3, 224, 4, 32, 5, 32, 9, 32, 10, 32, 11, 224, 6, 128, 0, 0, 0, 0, 7, 128, 100, 0, 0, 0, 8, 192, 139, 15, 27, 66, 1, 8, 192, 204, 240, 0, 0, 8, 192, 0, 0, 0, 0, 8, 192, 0, 0, 0, 0, 8, 192, 10, 164, 160, 64, 8, 192, 0, 0, 0, 0, 8, 192, 0, 0, 0, 0, 8, 192, 0, 0, 0, 0, 65, 192, 51, 51, 211, 65, 65, 193, 31, 133, 217, 65, 65, 66, 0, 0, 0, 0, 65, 67, 0, 0, 0, 0, 65, 196, 0, 0, 160, 64, 65, 69, 0, 0, 0, 0, 66, 192, 61, 10, 207, 65, 66, 193, 143, 194, 163, 65, 66, 194, 124, 188, 59, 68, 66, 195, 176, 246, 218, 64, 66, 68, 0, 0, 0, 0, 66, 69, 0, 0, 0, 0, 26, 148
+};
 
-    // Get on the correct executor
-    void run() {
-        // We need to be executing within a strand to perform async operations
-        // on the I/O objects in this session. Although not strictly necessary
-        // for single-threaded contexts, this example code is written to be
-        // thread-safe by default.
-        net::dispatch(ws_.get_executor(), beast::bind_front_handler(&session::on_run, shared_from_this()));
+std::string time_and_date() {
+    auto current_time = std::time(0);
+    auto res = boost::lexical_cast<std::string>(std::put_time(std::gmtime(& current_time), "%Y-%m-%d %X"));
+    res.insert(res.begin(), '[');
+    res.push_back(']');
+    return res;
+}
+
+net::io_context ioc;
+websocket::stream<tcp::socket> ws{ ioc };
+beast::flat_buffer buffer;
+
+void read_handler(beast::error_code ec, std::size_t bytes_transferred) {
+    if(!ec) {
+        std::cout << time_and_date() << " read_handler: " << beast::make_printable(buffer.data()) << std::endl;
+        buffer.clear();
+        ws.async_read(buffer, beast::bind_front_handler(read_handler));
     }
-
-    // Start the asynchronous operation
-    void on_run() {
-        // Set suggested timeout settings for the websocket
-        ws_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::server));
-
-        // Set a decorator to change the Server of the handshake
-        ws_.set_option(websocket::stream_base::decorator([](websocket::response_type& res) {
-            res.set(http::field::server,
-                    std::string(BOOST_BEAST_VERSION_STRING) + " websocket-server-async");
-        }));
-
-        auto time_point = std::chrono::system_clock::now();
-
-        ws_client_t ws_client;
-        ws_client.connect_time = time_point;
-
-        ws_clients.push_back(ws_client);
-        // Accept the websocket handshake
-        ws_.async_accept(beast::bind_front_handler(&session::on_accept, shared_from_this()));
+    else {
+        std::cout << time_and_date() << " read_handler err: " << ec.message() << "\n";
+        std::cout << time_and_date() << " reason: " << ws.reason() << "\n";
+        buffer.clear();
     }
+    
+}
 
-    void on_accept(beast::error_code ec) {
-        if(ec)
-            return fail(ec, "accept");
+struct ws_init_res_t{
+    int port;
+};
 
-        // Read a message
-        do_read();
-    }
+struct ws_conn_res_t {
+    bool error = false;
+};
 
-    void do_read() {
-        // Read a message into our buffer
-        ws_.async_read(buffer_, beast::bind_front_handler(&session::on_read, shared_from_this()));
-    }
+ws_init_res_t ws_init(websocket::stream<tcp::socket>& ws) {
 
-    void on_read(beast::error_code ec, std::size_t bytes_transferred) {
-        boost::ignore_unused(bytes_transferred);
+    ws_init_res_t res{};
 
-        // This indicates that the session was closed
-        if(ec == websocket::error::closed)
-            return;
+    // Set a decorator to change the User-Agent of the handshake
+    ws.set_option(websocket::stream_base::decorator([](websocket::request_type& req) {
+        req.set(http::field::user_agent,
+            std::string(BOOST_BEAST_VERSION_STRING) + " websocket-client-coro");
+        req.set("DeviceID", " 18ADDF88EE");
+        req.set("fw", " 1.0.0");
+    }));
 
-        if(ec)
-            return fail(ec, "read");
+    return res;
+}
 
-        // Echo the message
-        ws_.text(ws_.got_text());
+ws_conn_res_t ws_connect(std::string host, websocket::stream<tcp::socket>& ws, net::io_context& ioc, beast::flat_buffer& buffer, resolver_result_t& resolver_result) {
+    ws_conn_res_t res{};
 
-        //ws_clients.back().last_message = beast::buffers_to_string(buffer_.data());
-        ws_clients.back().last_message_time = std::chrono::system_clock::now();
+    try {
+        auto ep      = net::connect(ws.next_layer(), resolver_result);
+    
+        host += ':' + std::to_string(ep.port());
         
-        // Clear the buffer
-        buffer_.consume(buffer_.size());
-        // Do another read
-        do_read();
-        //ws_.async_write(buffer_.data(), beast::bind_front_handler(&session::on_write, shared_from_this()));
+        ws.handshake(host, ws_path);
+    
+        ws.async_read(buffer, beast::bind_front_handler(read_handler));
+        std::cout << time_and_date() << " Reconnect" << std::endl;
+        res.error = false;
+    } catch(std::exception const& e) {
+        std::cout << time_and_date() << " Reconnect error: " << e.what() <<  std::endl;
+        res.error = true;
     }
 
-    void on_write(beast::error_code ec, std::size_t bytes_transferred) {
-        boost::ignore_unused(bytes_transferred);
+    return res;
+}
 
-        if(ec)
-            return fail(ec, "write");
+void ws_manage_thread(std::string host, net::io_context& ioc, websocket::stream<tcp::socket>& ws, beast::flat_buffer& buffer, resolver_result_t& resolver_result) {
 
-        // Clear the buffer
-        buffer_.consume(buffer_.size());
 
-        // Do another read
-        do_read();
-    }
-};
+    auto res = ws_connect(host, ws, ioc, buffer, resolver_result);
+    std::thread t{ [&] { ioc.run(); } };
+    t.detach();
+    while(true) {
 
-//------------------------------------------------------------------------------
-
-// Accepts incoming connections and launches the sessions
-class listener : public std::enable_shared_from_this<listener>
-{
-    net::io_context& ioc_;
-    tcp::acceptor acceptor_;
-
-    public:
-    listener(net::io_context& ioc, tcp::endpoint endpoint) : ioc_(ioc), acceptor_(ioc) {
-        beast::error_code ec;
-
-        // Open the acceptor
-        acceptor_.open(endpoint.protocol(), ec);
-        if(ec) {
-            fail(ec, "open");
-            return;
+        if(res.error) {
+            res = ws_connect(host, ws, ioc, buffer, resolver_result);
+            std::this_thread::sleep_for(std::chrono::seconds(time_between_packets));
+            continue;
         }
 
-        // Allow address reuse
-        acceptor_.set_option(net::socket_base::reuse_address(true), ec);
-        if(ec) {
-            fail(ec, "set_option");
-            return;
-        }
+        ws.binary(true);
+        boost::beast::error_code ec;
+        auto bytes = ws.write(net::buffer(ws_payload), ec);
 
-        // Bind to the server address
-        acceptor_.bind(endpoint, ec);
-        if(ec) {
-            fail(ec, "bind");
-            return;
-        }
-
-        // Start listening for connections
-        acceptor_.listen(net::socket_base::max_listen_connections, ec);
-        if(ec) {
-            fail(ec, "listen");
-            return;
-        }
-    }
-
-    // Start accepting incoming connections
-    void run() {
-        do_accept();
-    }
-
-    private:
-    void do_accept() {
-        // The new connection gets its own strand
-        acceptor_.async_accept(net::make_strand(ioc_),
-                               beast::bind_front_handler(&listener::on_accept, shared_from_this()));
-    }
-
-    void on_accept(beast::error_code ec, tcp::socket socket) {
-        if(ec) {
-            fail(ec, "accept");
+        if(ec || !ws.next_layer().is_open() || (bytes == 0)) {
+            res.error = true;
         } else {
-            // Create the session and run it
-            std::make_shared<session>(std::move(socket))->run();
+            //auto const time = std::chrono::current_zone()->to_local(std::chrono::system_clock::now());
+            std::cout << time_and_date() << " payload sent" << std::endl;
         }
 
-        // Accept another connection
-        do_accept();
+        // std::cout << beast::make_printable(buffer.data()) << std::endl;
+        ec.clear();
+
+        std::this_thread::sleep_for(std::chrono::seconds(time_between_packets));
     }
-};
+}
 
-//------------------------------------------------------------------------------
+// Sends a WebSocket message and prints the response
+int main(int argc, char** argv) {
 
-int main(int argc, char* argv[]) {
+    SetConsoleOutputCP(CP_UTF8);
+
     // Check command line arguments.
-    if(argc != 6) {
-        std::cerr << "Usage: websocket-server-async <address> <ws_port> <http_port> <doc_root> <threads>\n"
+    if(argc != 4) {
+        std::cerr << "Usage: websocket-client-sync <host> <port> <text>\n"
                   << "Example:\n"
-                  << "    websocket-server-async 0.0.0.0 8080 80 ~/docs 1\n";
+                  << "    websocket-client-sync echo.websocket.org 80 \"Hello, world!\"\n";
         return EXIT_FAILURE;
     }
-    auto const address = net::ip::make_address(argv[1]);
-    auto const ws_port    = static_cast<unsigned short>(std::atoi(argv[2]));
-    auto const http_port     = static_cast<unsigned short>(std::atoi(argv[3]));
-    auto const doc_root = std::make_shared<std::string>(argv[4]);
-    auto const threads = std::max<int>(1, std::atoi(argv[5]));
+    std::string host = argv[1];
+    auto const port  = argv[2];
+    auto const text  = argv[3];
+
     // The io_context is required for all I/O
-    net::io_context ioc{ threads };
+    //net::io_context ioc;
 
-    // Create and launch a listening port
-    std::make_shared<listener>(ioc, tcp::endpoint{ address, ws_port })->run();
+    // These objects perform our I/O
+    tcp::resolver resolver{ ioc };
+    //websocket::stream<tcp::socket> ws{ ioc };
 
-    // Create and launch a listening port
-    std::make_shared<http_listener>(ioc, tcp::endpoint{ address, http_port }, doc_root)->run();
+    // Look up the domain name
+    std::cout << time_and_date() << "Looking up " << host << " on port " << port <<  std::endl;
 
-    // Run the I/O service on the requested number of threads
-    std::vector<std::thread> v;
-    v.reserve(threads - 1);
-    for(auto i = threads - 1; i > 0; --i) v.emplace_back([&ioc] { ioc.run(); });
-    ioc.run();
+    resolver_result_t resolver_result;
+
+    try {
+        resolver_result = resolver.resolve(host, port);
+    } catch(std::exception const& e) {
+        std::cerr << "Resolve Error: " << e.what() << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    std::cout << "Resolver result: " << (resolver_result.begin()->endpoint().address().to_string()) << std::endl;
+
+    ws_init(ws);
+
+    ws_manage_thread(host, ioc, ws, buffer, resolver_result);
+
+    // // Perform the websocket handshake
+    // ws.handshake(host, ws_path);
+
+    // // This buffer will hold the incoming message
+    
+    // std::thread t{ [&] { ioc.run(); } };
+    // t.detach();
+
+    // ws.async_read(buffer, beast::bind_front_handler(read_handler));
+
+    // size_t reconnect_count = 0;
+
+    // while(1) {
+    //     ws.binary(true);
+    //     boost::beast::error_code ec;
+    //     ws.write(net::buffer(ws_payload), ec);
+
+    //     if(ec || !ws.next_layer().is_open()) {
+            
+    //         if(ec)
+    //             std::cout << time_and_date() << " Error: " << ec.message() << std::endl;
+    //         else
+    //             std::cout << time_and_date() << "!ws.next_layer().is_open()" << std::endl;
+
+    //         std::cout << time_and_date() << " reason: " << ws.reason() << std::endl;
+
+    //         try {
+    //             // ws.close(websocket::close_code::normal);
+
+    //             //results = resolver.resolve(host, port);
+    //             ep      = net::connect(ws.next_layer(), results);
+    //             host += ':' + std::to_string(ep.port());
+
+    //             ws.handshake(host, ws_path);
+    //             ws.async_read(buffer, beast::bind_front_handler(read_handler));
+    //             reconnect_count++;
+    //             std::cout << time_and_date() << "Reconnect" << std::endl;
+    //         } catch(std::exception const& e) {
+    //             std::cout << time_and_date() << "Reconnect error: " << e.what() << std::endl;
+    //         }
+    //         ec.clear();
+    //     } else {
+    //         //auto const time = std::chrono::current_zone()->to_local(std::chrono::system_clock::now());
+    //         std::cout << time_and_date() << " Sent, rc: " << reconnect_count << std::endl;
+    //     }
+
+    //     // std::cout << beast::make_printable(buffer.data()) << std::endl;
+
+    //     std::this_thread::sleep_for(std::chrono::seconds(30));
+    // }
+
+    // // Send the message
+    // ws.write(net::buffer(std::string(text)));
+
+    // // Read a message into our buffer
+    // ws.read(buffer);
+
+    // // Close the WebSocket connection
+    // ws.close(websocket::close_code::normal);
+
+    // // If we get here then the connection is closed gracefully
+
+    // // The make_printable() function helps print a ConstBufferSequence
+    // std::cout << beast::make_printable(buffer.data()) << std::endl;
 
     return EXIT_SUCCESS;
 }

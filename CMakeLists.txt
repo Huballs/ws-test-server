@@ -10,7 +10,7 @@ set(CXX_EXTENSIONS ON)
 
 set(CMAKE_TOOLCHAIN_FILE ${CMAKE_BINARY_DIR}/conan_toolchain.cmake)
 
-set(PROJECT_NAME ws-test-server)
+set(PROJECT_NAME ws-test-client)
 
 project(${PROJECT_NAME} CXX)
 
@@ -28,8 +28,6 @@ endif()
 
 set(SRC_FILES
   src/main.cpp
-  src/ws_client.h
-  src/ws_client.cpp
   )
 
 add_executable(${PROJECT_NAME} ${SRC_FILES})

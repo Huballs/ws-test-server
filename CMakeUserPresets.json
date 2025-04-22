@@ -4,6 +4,6 @@
         "conan": {}
     },
     "include": [
-        "C:\\Users\\edashkevich\\Documents\\source\\ws-test-server\\build\\CMakePresets.json"
+        "C:\\Users\\edashkevich\\Documents\\source\\ws-test-client\\build\\CMakePresets.json"
     ]
 }
