@@ -82,12 +82,14 @@
         "xtree": "cpp",
         "xutility": "cpp",
         "*.ipp": "cpp",
-        "strstream": "cpp"
+        "strstream": "cpp",
+        "fstream": "cpp",
+        "numeric": "cpp"
     },
 
     "cmake.debugConfig": {
         "args": [
-            "test.secbuild.ru", "81", "Hello"
+            "test.secbuild.ru", "81", "30", "ids.txt"
         ]
     }
 }

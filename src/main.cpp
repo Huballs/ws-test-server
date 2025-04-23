@@ -20,6 +20,9 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/websocket.hpp>
 #include <boost/lexical_cast.hpp>
+#include "boost/random.hpp"
+#include "boost/generator_iterator.hpp"
+#include <boost/thread/mutex.hpp>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -28,18 +31,35 @@
 #include <ctime>
 #include <functional>
 #include <thread>
-#include<windows.h>
+#include <fstream>
+#include "utl_log.hpp"
+#include <windows.h>
 
 namespace beast     = boost::beast;         // from <boost/beast.hpp>
 namespace http      = beast::http;          // from <boost/beast/http.hpp>
 namespace websocket = beast::websocket;     // from <boost/beast/websocket.hpp>
 namespace net       = boost::asio;          // from <boost/asio.hpp>
+namespace random    = boost::random;        // from <boost/random.hpp>
 using tcp           = boost::asio::ip::tcp; // from <boost/asio/ip/tcp.hpp>
 using resolver_result_t = boost::asio::ip::basic_resolver_results<boost::asio::ip::tcp>;
 
+struct ws_state_t {
+    websocket::stream<tcp::socket> ws;
+    beast::flat_buffer buffer;
+    std::string device_id;
+    bool connected = false;
+
+    std::chrono::steady_clock::time_point last_run_time;
+};
+
+struct ws_states_t {
+    net::io_context ioc;
+    std::vector<ws_state_t> v_ws;
+};
 
 const char* ws_path = "/socket-units-server/"; 
-constexpr long long time_between_packets = 5;
+// constexpr long long time_between_packets = 4;
+constexpr long long time_between_devices_ms = 50;
 
 std::vector<uint8_t> ws_payload = {
     250, 2, 32, 3, 224, 4, 32, 5, 32, 9, 32, 10, 32, 11, 224, 6, 128, 0, 0, 0, 0, 7, 128, 100, 0, 0, 0, 8, 192, 139, 15, 27, 66, 1, 8, 192, 204, 240, 0, 0, 8, 192, 0, 0, 0, 0, 8, 192, 0, 0, 0, 0, 8, 192, 10, 164, 160, 64, 8, 192, 0, 0, 0, 0, 8, 192, 0, 0, 0, 0, 8, 192, 0, 0, 0, 0, 65, 192, 51, 51, 211, 65, 65, 193, 31, 133, 217, 65, 65, 66, 0, 0, 0, 0, 65, 67, 0, 0, 0, 0, 65, 196, 0, 0, 160, 64, 65, 69, 0, 0, 0, 0, 66, 192, 61, 10, 207, 65, 66, 193, 143, 194, 163, 65, 66, 194, 124, 188, 59, 68, 66, 195, 176, 246, 218, 64, 66, 68, 0, 0, 0, 0, 66, 69, 0, 0, 0, 0, 26, 148
@@ -53,22 +73,29 @@ std::string time_and_date() {
     return res;
 }
 
-net::io_context ioc;
-websocket::stream<tcp::socket> ws{ ioc };
-beast::flat_buffer buffer;
-
-void read_handler(beast::error_code ec, std::size_t bytes_transferred) {
+void read_handler(beast::error_code ec, std::size_t bytes_transferred, ws_state_t& ws_state) {
     if(!ec) {
-        std::cout << time_and_date() << " read_handler: " << beast::make_printable(buffer.data()) << std::endl;
-        buffer.clear();
-        ws.async_read(buffer, beast::bind_front_handler(read_handler));
+        UTL_LOG_DINFO("Read handler: count: ",  bytes_transferred, " Message: ", beast::make_printable(ws_state.buffer.data()));
+
+        auto read_h = [&ws_state](beast::error_code ec, std::size_t bytes_transferred) {
+            read_handler(ec, bytes_transferred, ws_state);
+        };
+    
+        ws_state.ws.async_read(ws_state.buffer, beast::bind_front_handler(read_h));
+
     }
     else {
-        std::cout << time_and_date() << " read_handler err: " << ec.message() << "\n";
-        std::cout << time_and_date() << " reason: " << ws.reason() << "\n";
-        buffer.clear();
+        UTL_LOG_DERR("Read handler error: ", ec.message());
     }
+
+    ws_state.buffer.clear();
     
+}
+
+void write_handler(beast::error_code ec, size_t) {
+    if(ec) {
+        std::cout << time_and_date() << " write_handler err: " << ec.message() << "\n";
+    }
 }
 
 struct ws_init_res_t{
@@ -79,179 +106,297 @@ struct ws_conn_res_t {
     bool error = false;
 };
 
-ws_init_res_t ws_init(websocket::stream<tcp::socket>& ws) {
+void generate_random_ids(std::string filename, size_t count) {
+    typedef boost::mt19937 RNGType;
+    RNGType rng;
+    boost::uniform_int<size_t> one_to_six( 1, 0xffffffffff);
+    boost::variate_generator< RNGType, boost::uniform_int<size_t> >
+                  dice(rng, one_to_six);
+    
+    std::fstream file(filename, std::ios::out | std::ios::trunc);
+
+    if(!file.is_open()) {
+        UTL_LOG_DERR("Failed to open file: ", filename);
+        return;
+    }
+
+    for(int i = 0; i < count; i++) {
+        // std::string id = std::to_string(dist(mt));
+//         std::ostringstream ss;
+// ss << std::setw(6) << std::setfill('0') << i;
+        size_t d = dice();
+        file << std::hex << std::setw(10) << std::setfill('0') << d << std::endl;
+    }
+}
+
+ws_init_res_t ws_init(websocket::stream<tcp::socket>& ws, std::string device_id, std::string fw) {
 
     ws_init_res_t res{};
 
     // Set a decorator to change the User-Agent of the handshake
-    ws.set_option(websocket::stream_base::decorator([](websocket::request_type& req) {
+    ws.set_option(websocket::stream_base::decorator([device_id, fw](websocket::request_type& req) {
         req.set(http::field::user_agent,
             std::string(BOOST_BEAST_VERSION_STRING) + " websocket-client-coro");
-        req.set("DeviceID", " 18ADDF88EE");
-        req.set("fw", " 1.0.0");
+        req.set("DeviceID", device_id);
+        req.set("fw", fw);
     }));
 
     return res;
 }
 
-ws_conn_res_t ws_connect(std::string host, websocket::stream<tcp::socket>& ws, net::io_context& ioc, beast::flat_buffer& buffer, resolver_result_t& resolver_result) {
+bool run_with_timeout(std::function<void()> f, std::chrono::milliseconds timeout, std::string_view text) {
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    bool done = false;
+
+    auto wrapper = [&done, f]() {
+        try {
+            f();
+        } catch(std::exception const& e) {
+            UTL_LOG_DERR("Exception in timeout handler: ", e.what());
+        }
+        done = true;
+    };
+
+    auto t = new std::thread(wrapper);
+    t->detach();
+
+    while(!done) {
+        if(std::chrono::steady_clock::now() > deadline) {
+            UTL_LOG_DWARN("Timeout: ", text);
+            break;
+        }
+    }
+
+    delete t;
+
+    return done;
+}
+
+void ws_async_read(ws_state_t& ws_state) {
+    auto handler = [&]() {
+        while(ws_state.ws.is_open()) {
+            try {
+                ws_state.ws.read(ws_state.buffer);
+                UTL_LOG_DNOTE("Async read: ", beast::make_printable(ws_state.buffer.data()), " ID: ", ws_state.device_id);
+            } catch(std::exception const& e) {
+                UTL_LOG_DERR("Async read error: ", e.what(), "ID: ", ws_state.device_id);
+            }
+            ws_state.buffer.clear();
+        }
+    };
+
+    std::thread t(handler);
+    t.detach();
+}
+
+ws_conn_res_t ws_connect(std::string host, ws_state_t& ws_state, const resolver_result_t& resolver_result) {
     ws_conn_res_t res{};
 
     try {
-        auto ep      = net::connect(ws.next_layer(), resolver_result);
-    
+
+        UTL_LOG_DINFO("Connecting to: ", host, "ID: ", ws_state.device_id);
+        auto ep      = net::connect(ws_state.ws.next_layer(), resolver_result);
         host += ':' + std::to_string(ep.port());
+
+    } catch(std::exception const& e) {
+        UTL_LOG_DERR("Connect Error: ", e.what(), "ID: ", ws_state.device_id);
+        res.error = true;
+        return res;
+    }
+
+    try {
+        UTL_LOG_DINFO("Handshake, ID: ", ws_state.device_id);
+        bool done = run_with_timeout(
+            [&]() {
+               ws_state.ws.handshake(host, ws_path);
+            }, 
+            std::chrono::milliseconds(8000),
+            "Handshake"
+        );
+
+        if(!done) {
+            res.error = true;
+            return res;
+        }
+
+        // auto read_h = [&ws_state](beast::error_code ec, std::size_t bytes_transferred) {
+        //     read_handler(ec, bytes_transferred, ws_state);
+        // };
+
+        // ws_state.ws.async_read(ws_state.buffer, beast::bind_front_handler(read_h));
+
+        ws_async_read(ws_state);
         
-        ws.handshake(host, ws_path);
-    
-        ws.async_read(buffer, beast::bind_front_handler(read_handler));
-        std::cout << time_and_date() << " Reconnect" << std::endl;
+
         res.error = false;
     } catch(std::exception const& e) {
-        std::cout << time_and_date() << " Reconnect error: " << e.what() <<  std::endl;
+        UTL_LOG_DERR("Handshake Error: ", e.what(), "ID: ", ws_state.device_id);
         res.error = true;
     }
 
     return res;
 }
 
-void ws_manage_thread(std::string host, net::io_context& ioc, websocket::stream<tcp::socket>& ws, beast::flat_buffer& buffer, resolver_result_t& resolver_result) {
+bool is_time(long long time, std::chrono::steady_clock::time_point& last_run_time) {
 
-
-    auto res = ws_connect(host, ws, ioc, buffer, resolver_result);
-    std::thread t{ [&] { ioc.run(); } };
-    t.detach();
-    while(true) {
-
-        if(res.error) {
-            res = ws_connect(host, ws, ioc, buffer, resolver_result);
-            std::this_thread::sleep_for(std::chrono::seconds(time_between_packets));
-            continue;
-        }
-
-        ws.binary(true);
-        boost::beast::error_code ec;
-        auto bytes = ws.write(net::buffer(ws_payload), ec);
-
-        if(ec || !ws.next_layer().is_open() || (bytes == 0)) {
-            res.error = true;
-        } else {
-            //auto const time = std::chrono::current_zone()->to_local(std::chrono::system_clock::now());
-            std::cout << time_and_date() << " payload sent" << std::endl;
-        }
-
-        // std::cout << beast::make_printable(buffer.data()) << std::endl;
-        ec.clear();
-
-        std::this_thread::sleep_for(std::chrono::seconds(time_between_packets));
+    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_run_time);
+    // std::cout << time_and_date() << " elapsed: " << elapsed.count() << " DeviceId: " << ws_state.device_id << std::endl;
+    if(elapsed < std::chrono::seconds(time)) {
+        return false;
     }
+
+    last_run_time = now;
+
+    return true;
+}
+
+void ws_manage_thread(std::string host, ws_state_t& ws_state, resolver_result_t& resolver_result, long long time_between_packets, long long time_reconnect) {
+
+    if(!ws_state.connected || !ws_state.ws.is_open()) {
+
+        if((ws_state.last_run_time == std::chrono::steady_clock::time_point{}) || is_time(time_between_packets, ws_state.last_run_time)) {
+
+            auto conn_res = ws_connect(host, ws_state, resolver_result);
+            if(conn_res.error) {
+                return;
+            }
+
+            ws_state.connected = true;
+        }
+    }
+
+    if(!is_time(time_between_packets, ws_state.last_run_time)) return;
+
+    ws_state.ws.binary(true);
+    boost::beast::error_code ec;
+
+    UTL_LOG_DINFO("Sending payload, ID:", ws_state.device_id);
+
+    run_with_timeout(
+        [&]() {
+            ws_state.ws.write(net::buffer(ws_payload), ec);
+        }, 
+        std::chrono::milliseconds(5000),
+        "Write"
+    );
+
+    // ws_state.ws.async_write(net::buffer(ws_payload), beast::bind_front_handler(write_handler));
+
+    if(ec || !ws_state.ws.next_layer().is_open()) {
+        ws_state.connected = false;
+        UTL_LOG_DWARN("Connection closed, ID: ", ws_state.device_id);
+        //ws_state.ws.close(websocket::close_code::normal);
+
+        run_with_timeout(
+            [&]() {
+                ws_state.ws.close(websocket::close_code::normal);
+            }, 
+            std::chrono::milliseconds(5000),
+            "Close"
+        );
+
+    } else {
+        //auto const time = std::chrono::current_zone()->to_local(std::chrono::system_clock::now());
+        UTL_LOG_DNOTE("Payload sent, ID: ", ws_state.device_id);
+    }
+
+}
+
+
+
+void print_usage() {
+    std::cout << "Usage: websocket-client-sync <host> <port> <time-between-packets s> <time-reconnect s> <ids-file>\n"
+              << "Example:\n"
+              << "    websocket-client-sync echo.websocket.org 80 30 ids.txt\n"
+              << "\n"
+              << "Usage: websocket-client-sync gen <ids-file> <count>"
+              << std::endl;
 }
 
 // Sends a WebSocket message and prints the response
 int main(int argc, char** argv) {
 
-    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+
+    std::string host;
+    const char * port;
+    const char * ids_file;
+    const char * count;
+    long long time_between_packets;
+    long long time_reconnect;
 
     // Check command line arguments.
-    if(argc != 4) {
-        std::cerr << "Usage: websocket-client-sync <host> <port> <text>\n"
-                  << "Example:\n"
-                  << "    websocket-client-sync echo.websocket.org 80 \"Hello, world!\"\n";
+    if((argc == 6) && (std::string(argv[1]) != "gen")) {
+        host = argv[1];
+        port = argv[2];
+        time_between_packets = std::stoi(argv[3]);
+        time_reconnect = std::stoi(argv[4]);
+        ids_file = argv[5];
+    } else if((argc == 4) && (std::string(argv[1]) == "gen")) {
+        ids_file = argv[2];
+        count = argv[3];
+
+        generate_random_ids(ids_file, std::stoi(count));
+
+        return EXIT_SUCCESS;
+    } else {
+        print_usage();
         return EXIT_FAILURE;
     }
-    std::string host = argv[1];
-    auto const port  = argv[2];
-    auto const text  = argv[3];
 
-    // The io_context is required for all I/O
-    //net::io_context ioc;
+    ws_states_t ws_states{};
 
-    // These objects perform our I/O
-    tcp::resolver resolver{ ioc };
-    //websocket::stream<tcp::socket> ws{ ioc };
-
-    // Look up the domain name
-    std::cout << time_and_date() << "Looking up " << host << " on port " << port <<  std::endl;
-
+    tcp::resolver resolver{ ws_states.ioc};
     resolver_result_t resolver_result;
+
+    net::io_context ioc;
+    std::thread t{ [&] { ioc.run(); } };
+    t.detach();
 
     try {
         resolver_result = resolver.resolve(host, port);
+        UTL_LOG_DINFO("Resolver result: ", resolver_result.begin()->endpoint().address().to_string());
     } catch(std::exception const& e) {
-        std::cerr << "Resolve Error: " << e.what() << std::endl;
+        UTL_LOG_DERR("Resolver error: ", e.what());
         return EXIT_FAILURE;
     }
 
-    std::cout << "Resolver result: " << (resolver_result.begin()->endpoint().address().to_string()) << std::endl;
+    std::fstream ids_file_stream(ids_file, std::ios::in | std::ios::app);
 
-    ws_init(ws);
+    if(!ids_file_stream.is_open()) {
+        UTL_LOG_DERR("Failed to open file: ", ids_file);
+        return EXIT_FAILURE;
+    }
 
-    ws_manage_thread(host, ioc, ws, buffer, resolver_result);
+    std::string line;
+    while(std::getline(ids_file_stream, line)) {
+        ws_state_t ws_state{.ws = websocket::stream<tcp::socket>(ws_states.ioc),
+                            .buffer = beast::flat_buffer{},
+                            .device_id = line,
+                            .connected = false
+        };
 
-    // // Perform the websocket handshake
-    // ws.handshake(host, ws_path);
+        ws_init(ws_state.ws, line, "1.0.0");
 
-    // // This buffer will hold the incoming message
-    
-    // std::thread t{ [&] { ioc.run(); } };
-    // t.detach();
+        ws_states.v_ws.push_back(std::move(ws_state));
 
-    // ws.async_read(buffer, beast::bind_front_handler(read_handler));
+    }
 
-    // size_t reconnect_count = 0;
+    std::thread t_ws {[&]() { ws_states.ioc.run(); }};
+    t_ws.detach(); 
 
-    // while(1) {
-    //     ws.binary(true);
-    //     boost::beast::error_code ec;
-    //     ws.write(net::buffer(ws_payload), ec);
+    while(true) {
+        for(auto& ws_state : ws_states.v_ws) {
+            try {
+                ws_manage_thread(host, ws_state, resolver_result, time_between_packets, time_reconnect);
+            } catch(std::exception const& e) {
+                UTL_LOG_DERR("Exception: ", e.what(), "ID: ", ws_state.device_id);
+            }
 
-    //     if(ec || !ws.next_layer().is_open()) {
-            
-    //         if(ec)
-    //             std::cout << time_and_date() << " Error: " << ec.message() << std::endl;
-    //         else
-    //             std::cout << time_and_date() << "!ws.next_layer().is_open()" << std::endl;
-
-    //         std::cout << time_and_date() << " reason: " << ws.reason() << std::endl;
-
-    //         try {
-    //             // ws.close(websocket::close_code::normal);
-
-    //             //results = resolver.resolve(host, port);
-    //             ep      = net::connect(ws.next_layer(), results);
-    //             host += ':' + std::to_string(ep.port());
-
-    //             ws.handshake(host, ws_path);
-    //             ws.async_read(buffer, beast::bind_front_handler(read_handler));
-    //             reconnect_count++;
-    //             std::cout << time_and_date() << "Reconnect" << std::endl;
-    //         } catch(std::exception const& e) {
-    //             std::cout << time_and_date() << "Reconnect error: " << e.what() << std::endl;
-    //         }
-    //         ec.clear();
-    //     } else {
-    //         //auto const time = std::chrono::current_zone()->to_local(std::chrono::system_clock::now());
-    //         std::cout << time_and_date() << " Sent, rc: " << reconnect_count << std::endl;
-    //     }
-
-    //     // std::cout << beast::make_printable(buffer.data()) << std::endl;
-
-    //     std::this_thread::sleep_for(std::chrono::seconds(30));
-    // }
-
-    // // Send the message
-    // ws.write(net::buffer(std::string(text)));
-
-    // // Read a message into our buffer
-    // ws.read(buffer);
-
-    // // Close the WebSocket connection
-    // ws.close(websocket::close_code::normal);
-
-    // // If we get here then the connection is closed gracefully
-
-    // // The make_printable() function helps print a ConstBufferSequence
-    // std::cout << beast::make_printable(buffer.data()) << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(time_between_devices_ms));
+        }
+    }
 
     return EXIT_SUCCESS;
 }
