@@ -89,7 +89,7 @@
 
     "cmake.debugConfig": {
         "args": [
-            "test.secbuild.ru", "81", "30", "ids.txt"
+            "test.secbuild.ru", "81", "30", "10", "2",  "ids.txt"
         ]
     }
 }
