@@ -118,7 +118,7 @@ struct ws_conn_res_t {
 
 void generate_random_ids(std::string filename, size_t count) {
     typedef boost::mt19937 RNGType;
-    RNGType rng;
+    RNGType rng(std::random_device{}());
     boost::uniform_int<size_t> one_to_six( 1, 0xffffffffff);
     boost::variate_generator< RNGType, boost::uniform_int<size_t> >
                   dice(rng, one_to_six);

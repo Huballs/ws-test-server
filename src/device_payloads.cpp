@@ -1,4 +1,5 @@
 #include "device_payloads.hpp"
+#include "utl_log.hpp"
 
 payload_t ws_payload = {
     250, 2, 32, 3, 224, 4, 32, 5, 32, 9, 32, 10, 32, 11, 224, 6, 128, 0, 0, 0, 0, 7, 128, 100, 0, 0, 0, 8, 192, 139, 15, 27, 66, 1, 8, 192, 204, 240, 0, 0, 8, 192, 0, 0, 0, 0, 8, 192, 0, 0, 0, 0, 8, 192, 10, 164, 160, 64, 8, 192, 0, 0, 0, 0, 8, 192, 0, 0, 0, 0, 8, 192, 0, 0, 0, 0, 65, 192, 51, 51, 211, 65, 65, 193, 31, 133, 217, 65, 65, 66, 0, 0, 0, 0, 65, 67, 0, 0, 0, 0, 65, 196, 0, 0, 160, 64, 65, 69, 0, 0, 0, 0, 66, 192, 61, 10, 207, 65, 66, 193, 143, 194, 163, 65, 66, 194, 124, 188, 59, 68, 66, 195, 176, 246, 218, 64, 66, 68, 0, 0, 0, 0, 66, 69, 0, 0, 0, 0, 26, 148
@@ -36,9 +37,11 @@ std::optional<std::vector<uint8_t>>  ws_get_payload (std::string request){
     if (request.find(base_main_payload) != std::string::npos) {
         if(which_main_payload % 2 == 0) {
             which_main_payload++;
+            UTL_LOG_INFO("picking good payload");
             return ws_payload;
         } else {
             which_main_payload++;
+            UTL_LOG_INFO("picking bad payload");
             return ws_bad_payload;
         }
     }
