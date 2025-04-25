@@ -265,7 +265,10 @@ bool is_time(long long time, std::chrono::steady_clock::time_point& last_run_tim
     return true;
 }
 
-void ws_manage_ws(std::string host, ws_state_t& ws_state, resolver_result_t& resolver_result, long long time_between_packets, long long time_reconnect, bool send_bad_payloads) {
+void ws_manage_ws(std::string host, ws_state_t& ws_state, resolver_result_t& resolver_result
+                    , long long time_between_packets, long long time_reconnect
+                    , bool send_bad_payloads, bool send_events
+                ) {
 
     if(ws_state.ws.is_open() && ws_state.extra_payload) {
         UTL_LOG_DINFO("Sending extra payload, ID:", ws_state.device_id);
@@ -276,7 +279,7 @@ void ws_manage_ws(std::string host, ws_state_t& ws_state, resolver_result_t& res
                 }
             }, 
             std::chrono::milliseconds(5000),
-            "Write"
+            "Extra payload Write"
         );
 
         ws_state.extra_payload = std::nullopt;
@@ -300,8 +303,25 @@ void ws_manage_ws(std::string host, ws_state_t& ws_state, resolver_result_t& res
     ws_state.ws.binary(true);
     boost::beast::error_code ec;
 
-    UTL_LOG_DDEBUG("Sending payload, ID:", ws_state.device_id);
 
+
+    if(send_events) {
+        UTL_LOG_DDEBUG("Sending event payload, ID:", ws_state.device_id);
+        run_with_timeout(
+            [&]() {
+                auto payload = ws_get_payload("event", send_bad_payloads);
+                if(!payload) return;
+                for(auto& p : payload.value()) {
+                    ws_state.ws.write(net::buffer(p));
+                }
+                // ws_state.ws.write(net::buffer(ws_get_payload("main_payload").value()), ec);
+            }, 
+            std::chrono::milliseconds(5000),
+            "Event write"
+        );
+    }
+
+    UTL_LOG_DDEBUG("Sending main payload, ID:", ws_state.device_id);
     run_with_timeout(
         [&]() {
             auto payload = ws_get_payload("main_payload", send_bad_payloads);
@@ -312,7 +332,7 @@ void ws_manage_ws(std::string host, ws_state_t& ws_state, resolver_result_t& res
             // ws_state.ws.write(net::buffer(ws_get_payload("main_payload").value()), ec);
         }, 
         std::chrono::milliseconds(5000),
-        "Write"
+        "Main payload write"
     );
 
     // ws_state.ws.async_write(net::buffer(ws_payload), beast::bind_front_handler(write_handler));
@@ -337,7 +357,11 @@ void ws_manage_ws(std::string host, ws_state_t& ws_state, resolver_result_t& res
 
 }
 
-void ws_manage_thread(std::string host, std::vector<ws_state_t>* ws_states, resolver_result_t& resolver_result, long long time_between_packets, long long time_reconnect, bool send_bad_payloads) {
+void ws_manage_thread(std::string host, std::vector<ws_state_t>* ws_states
+    , resolver_result_t& resolver_result, long long time_between_packets
+    , long long time_reconnect, bool send_bad_payloads
+    , bool send_events
+    ) {
 
     UTL_LOG_DINFO("Thread started, device count: ", ws_states->size());
 
@@ -345,7 +369,7 @@ void ws_manage_thread(std::string host, std::vector<ws_state_t>* ws_states, reso
         for(auto& ws_state : *ws_states) {
             
             try {
-                ws_manage_ws(host, ws_state, resolver_result, time_between_packets, time_reconnect, send_bad_payloads);
+                ws_manage_ws(host, ws_state, resolver_result, time_between_packets, time_reconnect, send_bad_payloads, send_events);
             } catch(std::exception const& e) {
                 UTL_LOG_DERR("Exception: ", e.what(), " ID: ", ws_state.device_id);
             }
@@ -359,10 +383,10 @@ void ws_manage_thread(std::string host, std::vector<ws_state_t>* ws_states, reso
 }
 
 void print_usage() {
-    std::cout << "Usage: websocket-client-sync <host> <port> <time-between-packets s> <time-reconnect s> <thread-count> <bad/no-bad> <ids-file>\n"
+    std::cout << "Usage: websocket-client-sync <host> <port> <time-between-packets s> <time-reconnect s> <thread-count> <bad/no-bad> <events/no-events> <ids-file>\n"
               << "bad - send bad payloads\n"
               << "Example:\n"
-              << "    websocket-client-sync echo.websocket.org 80 30 10 4 bad ids.txt\n"
+              << "    websocket-client-sync echo.websocket.org 80 30 10 4 bad events ids.txt\n"
               << "\n"
               << "Usage: websocket-client-sync gen <ids-file> <count>"
               << std::endl;
@@ -380,9 +404,10 @@ int main(int argc, char** argv) {
     long long time_reconnect;
     long long thread_count;
     bool bad_payloads = false;
+    bool send_events = false;
 
     // Check command line arguments.
-    if((argc == 8) && (std::string(argv[1]) != "gen")) {
+    if((argc == 9) && (std::string(argv[1]) != "gen")) {
         host = argv[1];
         port = argv[2];
         time_between_packets = std::stoi(argv[3]);
@@ -391,7 +416,11 @@ int main(int argc, char** argv) {
         if(std::string(argv[6]) == "bad") {
             bad_payloads = true;
         }
-        ids_file = argv[7];
+
+        if(std::string(argv[7]) == "events") {
+            send_events = true;
+        }
+        ids_file = argv[8];
 
         if(thread_count < 1) {
             std::cout << "Thread count must be at least 1" << std::endl;
@@ -466,7 +495,7 @@ int main(int argc, char** argv) {
             UTL_LOG_DINFO("Starting Thread with ", one_thread_ws_states->size(), " devices");
 
             ws_threads.emplace_back(std::thread{[&, one_thread_ws_states]() {
-                ws_manage_thread(host, one_thread_ws_states, resolver_result, time_between_packets, time_reconnect, bad_payloads);
+                ws_manage_thread(host, one_thread_ws_states, resolver_result, time_between_packets, time_reconnect, bad_payloads, send_events);
             }});
 
             ws_threads.back().detach();
@@ -479,7 +508,7 @@ int main(int argc, char** argv) {
     if(one_thread_ws_states->size() > 0) {
         UTL_LOG_DINFO("Starting Thread with ", one_thread_ws_states->size(), " devices");
         ws_threads.emplace_back(std::thread{[&, one_thread_ws_states]() {
-            ws_manage_thread(host, one_thread_ws_states, resolver_result, time_between_packets, time_reconnect, bad_payloads);
+            ws_manage_thread(host, one_thread_ws_states, resolver_result, time_between_packets, time_reconnect, bad_payloads, send_events);
         }});
 
         ws_threads.back().detach();
