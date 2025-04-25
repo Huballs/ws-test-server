@@ -36,14 +36,14 @@
 
 #include "utl_log.hpp"
 
-#include <windows.h>
+//#include <windows.h>
 #include "device_payloads.hpp"
 
 namespace beast     = boost::beast;         // from <boost/beast.hpp>
 namespace http      = beast::http;          // from <boost/beast/http.hpp>
 namespace websocket = beast::websocket;     // from <boost/beast/websocket.hpp>
 namespace net       = boost::asio;          // from <boost/asio.hpp>
-namespace random    = boost::random;        // from <boost/random.hpp>
+//namespace random    = boost::random;        // from <boost/random.hpp>
 namespace ssl       = boost::asio::ssl;       // from <boost/asio/ssl.hpp>
 
 using tcp           = boost::asio::ip::tcp; // from <boost/asio/ip/tcp.hpp>
@@ -370,7 +370,7 @@ void print_usage() {
 
 int main(int argc, char** argv) {
 
-    SetConsoleCP(CP_UTF8);
+//    SetConsoleCP(CP_UTF8);
 
     std::string host;
     const char * port;

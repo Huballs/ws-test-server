@@ -11,7 +11,7 @@
 #if !defined(UTL_PICK_MODULES) || defined(UTLMODULE_LOG)
 #ifndef UTLHEADERGUARD_LOG
 #define UTLHEADERGUARD_LOG
-
+#define _DEBUG
 // _______________________ INCLUDES _______________________
 
 #include <array>         // array<>
