@@ -32,7 +32,10 @@
 #include <functional>
 #include <thread>
 #include <fstream>
+#include <condition_variable>
+
 #include "utl_log.hpp"
+
 #include <windows.h>
 #include "device_payloads.hpp"
 
@@ -62,7 +65,7 @@ struct ws_state_t {
     std::string device_id;
     bool connected = false;
 
-    std::optional<payload_t> extra_payload;
+    std::optional<std::vector<payload_t>> extra_payload;
 
     std::chrono::steady_clock::time_point last_run_time;
 };
@@ -73,7 +76,7 @@ struct ws_state_t {
 
 const char* ws_path = "/socket-units-server/"; 
 // constexpr long long time_between_packets = 4;
-constexpr long long time_between_devices_ms = 50;
+constexpr long long time_between_devices_ms = 20;
 
 std::string time_and_date() {
     auto current_time = std::time(0);
@@ -182,12 +185,13 @@ bool run_with_timeout(std::function<void()> f, std::chrono::milliseconds timeout
     return done;
 }
 
-void ws_async_read(ws_state_t& ws_state) {
+void ws_async_read(ws_state_t& ws_state, bool send_bad_payloads) {
     auto handler = [&]() {
         while(ws_state.ws.is_open()) {
             try {
                 ws_state.ws.read(ws_state.buffer);
                 UTL_LOG_DNOTE("Async read: ", beast::make_printable(ws_state.buffer.data()), " ID: ", ws_state.device_id);
+                ws_state.extra_payload = ws_get_payload(beast::buffers_to_string(ws_state.buffer.data()), send_bad_payloads);
             } catch(std::exception const& e) {
                 UTL_LOG_DERR("Async read error: ", e.what(), "ID: ", ws_state.device_id);
             }
@@ -199,7 +203,7 @@ void ws_async_read(ws_state_t& ws_state) {
     t.detach();
 }
 
-ws_conn_res_t ws_connect(std::string host, ws_state_t& ws_state, const resolver_result_t& resolver_result) {
+ws_conn_res_t ws_connect(std::string host, ws_state_t& ws_state, const resolver_result_t& resolver_result, bool send_bad_payloads) {
     ws_conn_res_t res{};
 
     try {
@@ -235,7 +239,7 @@ ws_conn_res_t ws_connect(std::string host, ws_state_t& ws_state, const resolver_
 
         // ws_state.ws.async_read(ws_state.buffer, beast::bind_front_handler(read_h));
 
-        ws_async_read(ws_state);
+        ws_async_read(ws_state, send_bad_payloads);
         
 
         res.error = false;
@@ -261,13 +265,15 @@ bool is_time(long long time, std::chrono::steady_clock::time_point& last_run_tim
     return true;
 }
 
-void ws_manage_ws(std::string host, ws_state_t& ws_state, resolver_result_t& resolver_result, long long time_between_packets, long long time_reconnect) {
+void ws_manage_ws(std::string host, ws_state_t& ws_state, resolver_result_t& resolver_result, long long time_between_packets, long long time_reconnect, bool send_bad_payloads) {
 
     if(ws_state.ws.is_open() && ws_state.extra_payload) {
         UTL_LOG_DINFO("Sending extra payload, ID:", ws_state.device_id);
         run_with_timeout(
             [&]() {
-                ws_state.ws.write(net::buffer(ws_state.extra_payload.value()));
+                for(auto& p : ws_state.extra_payload.value()) {
+                    ws_state.ws.write(net::buffer(p));
+                }
             }, 
             std::chrono::milliseconds(5000),
             "Write"
@@ -280,7 +286,7 @@ void ws_manage_ws(std::string host, ws_state_t& ws_state, resolver_result_t& res
 
         if((ws_state.last_run_time == std::chrono::steady_clock::time_point{}) || is_time(time_between_packets, ws_state.last_run_time)) {
 
-            auto conn_res = ws_connect(host, ws_state, resolver_result);
+            auto conn_res = ws_connect(host, ws_state, resolver_result, send_bad_payloads);
             if(conn_res.error) {
                 return;
             }
@@ -298,7 +304,12 @@ void ws_manage_ws(std::string host, ws_state_t& ws_state, resolver_result_t& res
 
     run_with_timeout(
         [&]() {
-            ws_state.ws.write(net::buffer(ws_get_payload("main_payload").value()), ec);
+            auto payload = ws_get_payload("main_payload", send_bad_payloads);
+            if(!payload) return;
+            for(auto& p : payload.value()) {
+                ws_state.ws.write(net::buffer(p));
+            }
+            // ws_state.ws.write(net::buffer(ws_get_payload("main_payload").value()), ec);
         }, 
         std::chrono::milliseconds(5000),
         "Write"
@@ -326,7 +337,7 @@ void ws_manage_ws(std::string host, ws_state_t& ws_state, resolver_result_t& res
 
 }
 
-void ws_manage_thread(std::string host, std::vector<ws_state_t>* ws_states, resolver_result_t& resolver_result, long long time_between_packets, long long time_reconnect) {
+void ws_manage_thread(std::string host, std::vector<ws_state_t>* ws_states, resolver_result_t& resolver_result, long long time_between_packets, long long time_reconnect, bool send_bad_payloads) {
 
     UTL_LOG_DINFO("Thread started, device count: ", ws_states->size());
 
@@ -334,7 +345,7 @@ void ws_manage_thread(std::string host, std::vector<ws_state_t>* ws_states, reso
         for(auto& ws_state : *ws_states) {
             
             try {
-                ws_manage_ws(host, ws_state, resolver_result, time_between_packets, time_reconnect);
+                ws_manage_ws(host, ws_state, resolver_result, time_between_packets, time_reconnect, send_bad_payloads);
             } catch(std::exception const& e) {
                 UTL_LOG_DERR("Exception: ", e.what(), " ID: ", ws_state.device_id);
             }
@@ -348,9 +359,10 @@ void ws_manage_thread(std::string host, std::vector<ws_state_t>* ws_states, reso
 }
 
 void print_usage() {
-    std::cout << "Usage: websocket-client-sync <host> <port> <time-between-packets s> <time-reconnect s> <thread-count> <ids-file>\n"
+    std::cout << "Usage: websocket-client-sync <host> <port> <time-between-packets s> <time-reconnect s> <thread-count> <bad/no-bad> <ids-file>\n"
+              << "bad - send bad payloads\n"
               << "Example:\n"
-              << "    websocket-client-sync echo.websocket.org 80 30 10 4 ids.txt\n"
+              << "    websocket-client-sync echo.websocket.org 80 30 10 4 bad ids.txt\n"
               << "\n"
               << "Usage: websocket-client-sync gen <ids-file> <count>"
               << std::endl;
@@ -367,15 +379,25 @@ int main(int argc, char** argv) {
     long long time_between_packets;
     long long time_reconnect;
     long long thread_count;
+    bool bad_payloads = false;
 
     // Check command line arguments.
-    if((argc == 7) && (std::string(argv[1]) != "gen")) {
+    if((argc == 8) && (std::string(argv[1]) != "gen")) {
         host = argv[1];
         port = argv[2];
         time_between_packets = std::stoi(argv[3]);
         time_reconnect = std::stoi(argv[4]);
         thread_count = std::stoi(argv[5]);
-        ids_file = argv[6];
+        if(std::string(argv[6]) == "bad") {
+            bad_payloads = true;
+        }
+        ids_file = argv[7];
+
+        if(thread_count < 1) {
+            std::cout << "Thread count must be at least 1" << std::endl;
+            return EXIT_FAILURE;
+        }
+
     } else if((argc == 4) && (std::string(argv[1]) == "gen")) {
         ids_file = argv[2];
         count = argv[3];
@@ -416,12 +438,9 @@ int main(int argc, char** argv) {
 
     auto line_count = std::count(std::istreambuf_iterator<char>(ids_file_stream), std::istreambuf_iterator<char>(), '\n') + 1;
     UTL_LOG_DINFO("File Line count: ", line_count);
-    auto devices_per_thread = line_count / thread_count;
 
-    if(thread_count > line_count) {
-        thread_count = line_count;
-        devices_per_thread = 1;
-    }
+
+    auto devices_per_thread = line_count / thread_count;
 
     ids_file_stream.seekg(0, std::ios::beg);
 
@@ -429,6 +448,9 @@ int main(int argc, char** argv) {
     std::vector<ws_state_t>* one_thread_ws_states = new std::vector<ws_state_t>();
 
     std::string line;
+
+    long long actual_thread_count = 0;
+
     while(std::getline(ids_file_stream, line)) {
         ws_state_t ws_state{.ws = websocket::stream<tcp::socket>(ws_states_ioc),
                             .buffer = beast::flat_buffer{},
@@ -440,14 +462,15 @@ int main(int argc, char** argv) {
 
         one_thread_ws_states->push_back(std::move(ws_state));
 
-        if(one_thread_ws_states->size() == devices_per_thread) {
+        if((one_thread_ws_states->size() == devices_per_thread) && (actual_thread_count < (thread_count-1))) {
             UTL_LOG_DINFO("Starting Thread with ", one_thread_ws_states->size(), " devices");
+
             ws_threads.emplace_back(std::thread{[&, one_thread_ws_states]() {
-                ws_manage_thread(host, one_thread_ws_states, resolver_result, time_between_packets, time_reconnect);
+                ws_manage_thread(host, one_thread_ws_states, resolver_result, time_between_packets, time_reconnect, bad_payloads);
             }});
 
             ws_threads.back().detach();
-
+            actual_thread_count++;
             one_thread_ws_states = new std::vector<ws_state_t>();
         }
 
@@ -456,14 +479,15 @@ int main(int argc, char** argv) {
     if(one_thread_ws_states->size() > 0) {
         UTL_LOG_DINFO("Starting Thread with ", one_thread_ws_states->size(), " devices");
         ws_threads.emplace_back(std::thread{[&, one_thread_ws_states]() {
-            ws_manage_thread(host, one_thread_ws_states, resolver_result, time_between_packets, time_reconnect);
+            ws_manage_thread(host, one_thread_ws_states, resolver_result, time_between_packets, time_reconnect, bad_payloads);
         }});
 
         ws_threads.back().detach();
-
+        actual_thread_count++;
         one_thread_ws_states = nullptr;
     }
 
+    UTL_LOG_DINFO("Actual Thread count: ", actual_thread_count);
     while(1){};
 
     for(auto& thread : ws_threads) {

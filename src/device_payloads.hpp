@@ -11,4 +11,4 @@ using payload_t = std::vector<uint8_t>;
 // extern payload_t ws_payload;
 
 // return payload based on value of request
-std::optional<std::vector<uint8_t>>  ws_get_payload (std::string request);
+std::optional<std::vector<payload_t>> ws_get_payload (std::string_view request, bool include_bad_payloads);
