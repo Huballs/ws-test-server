@@ -187,15 +187,18 @@ bool run_with_timeout(std::function<void()> f, std::chrono::milliseconds timeout
 
 void ws_async_read(ws_state_t& ws_state, bool send_bad_payloads) {
     auto handler = [&]() {
-        while(ws_state.ws.is_open()) {
+        while(1) {
             try {
-                ws_state.ws.read(ws_state.buffer);
-                UTL_LOG_DNOTE("Async read: ", beast::make_printable(ws_state.buffer.data()), " ID: ", ws_state.device_id);
-                ws_state.extra_payload = ws_get_payload(beast::buffers_to_string(ws_state.buffer.data()), send_bad_payloads);
+                if(ws_state.ws.is_open()) {
+                    ws_state.ws.read(ws_state.buffer);
+                    UTL_LOG_DNOTE("Async read: ", beast::make_printable(ws_state.buffer.data()), " ID: ", ws_state.device_id);
+                    ws_state.extra_payload = ws_get_payload(beast::buffers_to_string(ws_state.buffer.data()), send_bad_payloads);
+                }
             } catch(std::exception const& e) {
                 UTL_LOG_DERR("Async read error: ", e.what(), "ID: ", ws_state.device_id);
             }
             ws_state.buffer.clear();
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
     };
 
@@ -307,8 +310,6 @@ void ws_manage_ws(std::string_view host, std::string_view path, ws_state_t& ws_s
 
     ws_state.ws.binary(true);
     boost::beast::error_code ec;
-
-
 
     if(send_events) {
         UTL_LOG_DDEBUG("Sending event payload, ID:", ws_state.device_id);
