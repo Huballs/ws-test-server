@@ -84,12 +84,22 @@
         "*.ipp": "cpp",
         "strstream": "cpp",
         "fstream": "cpp",
-        "numeric": "cpp"
+        "numeric": "cpp",
+        "hash_map": "cpp",
+        "cwctype": "cpp",
+        "deque": "cpp",
+        "memory_resource": "cpp",
+        "string_view": "cpp",
+        "numbers": "cpp",
+        "span": "cpp"
     },
 
     "cmake.debugConfig": {
         "args": [
-            "test.secbuild.ru", "81", "30", "10", "4", "no-bad",   "ids.txt"
-        ]
+            "test.secbuild.ru","/socket-units-server/", "81", "30", "10", "4", "no-bad", "events", "../ids.txt"
+        ],
+
+        "MIMode": "gdb",
+        "miDebuggerPath": "/usr/bin/gdb"
     }
 }

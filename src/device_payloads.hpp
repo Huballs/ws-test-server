@@ -4,7 +4,7 @@
 #include <vector>
 #include <optional>
 
-using payload_t = std::vector<uint8_t>;
+#include "util.hpp"
 
 // extern payload_t ws_payload_settings_probes_1;
 // extern payload_t ws_payload_settings_probes_2;

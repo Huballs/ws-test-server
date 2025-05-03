@@ -48,18 +48,18 @@ std::optional<std::vector<payload_t>>  ws_get_payload (std::string_view request,
     if (request.find(base_main_payload) != std::string::npos) {
         if((which_main_payload % 2 == 0) && include_bad_payloads) {
             which_main_payload++;
-            UTL_LOG_INFO("picking bad payload");
+            UTL_LOG_DINFO("picking bad payload");
             return std::vector<payload_t>{ws_bad_payload};
         } else {
             which_main_payload++;
-            UTL_LOG_INFO("picking good payload");
+            UTL_LOG_DINFO("picking good payload");
             return std::vector<payload_t>{ws_payload};
         }
     } else if (request.find(base_get_probes) != std::string::npos) {
-        UTL_LOG_INFO("picking good payload");
+        UTL_LOG_DINFO("picking good payload");
         return ws_get_probes_payload;
     } else if (request.find(base_event) != std::string::npos) {
-        UTL_LOG_INFO("picking good payload");
+        UTL_LOG_DINFO("picking good payload");
         return ws_event_payload;
     }
 

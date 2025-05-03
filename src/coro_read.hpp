@@ -1,49 +1,105 @@
-#include <coroutine>
+#pragma once
 
-struct IoResult {
-    std::error_code ec;
-    int result;
+#include <coroutine>
+#include "util.hpp"
+#include "device_payloads.hpp"
+
+enum class ReadResult {
+    error, closed, success
 };
 
-class RecvFromAwaitable {
+void read_handler(boost::beast::error_code ec
+    , std::size_t bytes_transferred
+    , ws_state_t& ws_state
+    , bool send_bad_payloads
+    , std::coroutine_handle<> handle
+    , ReadResult& res
+
+) {
+
+    if(!ec) {
+        UTL_LOG_DINFO("Read handler: count: ",  bytes_transferred, " Message: ", boost::beast::make_printable(ws_state.buffer.data()));
+
+        // auto read_h = [&ws_state](beast::error_code ec, std::size_t bytes_transferred) {
+        //     read_handler(ec, bytes_transferred, ws_state);
+        // };
+    
+        // ws_state.ws.async_read(ws_state.buffer, beast::bind_front_handler(read_h));
+        LOCK_GUARD(*ws_state.ws_state_mutex);
+        ws_state.extra_payload = ws_get_payload(
+            boost::beast::buffers_to_string(ws_state.buffer.data())
+            , send_bad_payloads
+        );
+
+        res = ReadResult::success;
+    }
+    else {
+        UTL_LOG_DERR("Read handler error: ", ec.message());
+        res = ReadResult::error;
+    }
+
+    ws_state.buffer.clear();
+
+    handle.resume();
+}
+
+class ReadFromAwaitable {
 public:
-    RecvFromAwaitable(IoQueue& io, int socket, void* buf, size_t len,
-        ::sockaddr_in* srcAddr)
-        : io_(io)
-        , socket_(socket)
-        , buf_(buf)
-        , len_(len)
-        , srcAddr_(srcAddr)
+    ReadFromAwaitable(ws_state_t& ws_state, bool send_bad_payloads)
+        : m_ws_state(ws_state), m_send_bad_payloads(send_bad_payloads)
     {
     }
 
     auto operator co_await()
     {
         struct Awaiter {
-            RecvFromAwaitable& awaitable;
-            IoResult result = {};
+            ReadFromAwaitable& awaitable;
+            ws_state_t& m_ws_state;
+            bool m_send_bad_payloads;
 
-            bool await_ready() const noexcept { return false; }
+            ReadResult m_result = ReadResult::success;
+            
+            bool await_ready() const noexcept { 
+                // if(result != ReadResult::success)
+                //     return true;
+                return false; 
+            }
+
 
             void await_suspend(std::coroutine_handle<> handle) noexcept
             {
-                awaitable.io_.recvfrom(awaitable.socket_, awaitable.buf_,
-                    awaitable.len_, 0, awaitable.srcAddr_,
-                    [this, handle](std::error_code ec, int receivedBytes) {
-                        result = IoResult { ec, receivedBytes };
-                        handle.resume();
-                    });
+
+                auto read_h = [&](boost::beast::error_code ec, std::size_t bytes_transferred) {
+                    read_handler(ec, bytes_transferred, m_ws_state, m_send_bad_payloads, handle, m_result);
+ 
+                };
+            
+                m_ws_state.ws.async_read(m_ws_state.buffer, boost::beast::bind_front_handler(read_h));
             }
 
-            IoResult await_resume() const noexcept { return result; }
+            ReadResult await_resume() const noexcept { return m_result; }
         };
-        return Awaiter { *this };
+        return Awaiter { *this,  m_ws_state, m_send_bad_payloads };
     }
-
+    
 private:
-    IoQueue& io_;
-    int socket_;
-    void* buf_;
-    size_t len_;
-    ::sockaddr_in* srcAddr_;
+
+    ws_state_t& m_ws_state;
+    bool m_send_bad_payloads;
 };
+
+class BasicCoroutine {
+public:
+    struct Promise {
+        BasicCoroutine get_return_object() { return BasicCoroutine {}; }
+
+        void unhandled_exception() noexcept { }
+
+        void return_void() noexcept { }
+
+        std::suspend_never initial_suspend() noexcept { return {}; }
+        std::suspend_never final_suspend() noexcept { return {}; }
+    };
+    using promise_type = Promise;
+};
+    
